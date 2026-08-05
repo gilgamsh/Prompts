@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workdir="$(realpath -e -- "$PWD")"
+
+if [[ "$workdir" == "/" ]]; then
+    echo "Refusing to run sandbox in /" >&2
+    exit 1
+fi
+
+state="$workdir/.agent-state"
+
+mkdir -p \
+    "$state/home" \
+    "$state/cache" \
+    "$state/config" \
+    "$state/data" \
+    "$state/python-user" \
+    "$state/conda/envs" \
+    "$state/conda/pkgs"
+
+
+exec bwrap \
+    --die-with-parent \
+    --new-session \
+    --unshare-all \
+    --share-net \
+    \
+    --ro-bind / / \
+    --bind "$workdir" "$workdir" \
+    \
+    --proc /proc \
+    --dev /dev \
+    --tmpfs /tmp \
+    --tmpfs /run \
+    \
+    --setenv HOME "$state/home" \
+    --setenv USER "$(id -un)" \
+    --setenv LOGNAME "$(id -un)" \
+    \
+    --setenv XDG_CACHE_HOME "$state/cache" \
+    --setenv XDG_CONFIG_HOME "$state/config" \
+    --setenv XDG_DATA_HOME "$state/data" \
+    \
+    --setenv PYTHONUSERBASE "$state/python-user" \
+    \
+    --setenv CONDA_ENVS_PATH "$state/conda/envs" \
+    --setenv CONDA_PKGS_DIRS "$state/conda/pkgs" \
+    \
+    --chdir "$workdir" \
+    \
+    "$@"
