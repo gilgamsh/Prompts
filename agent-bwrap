@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workdir="$(realpath -e -- "$PWD")"
+start_dir="$(realpath -e -- "$PWD")"
+
+# 在 Git 仓库的子目录启动时，自动使用整个 worktree 根目录
+if git -C "$start_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    workdir="$(git -C "$start_dir" rev-parse --show-toplevel)"
+else
+    workdir="$start_dir"
+fi
+
+workdir="$(realpath -e -- "$workdir")"
 
 if [[ "$workdir" == "/" ]]; then
-    echo "Refusing to run sandbox in /" >&2
+    echo "Refusing to use / as writable workspace" >&2
     exit 1
 fi
 
@@ -19,34 +28,67 @@ mkdir -p \
     "$state/conda/envs" \
     "$state/conda/pkgs"
 
+git_mounts=()
 
-exec bwrap \
-    --die-with-parent \
-    --new-session \
-    --unshare-all \
-    --share-net \
-    \
-    --ro-bind / / \
-    --bind "$workdir" "$workdir" \
-    \
-    --proc /proc \
-    --dev /dev \
-    --tmpfs /tmp \
-    --tmpfs /run \
-    \
-    --setenv HOME "$state/home" \
-    --setenv USER "$(id -un)" \
-    --setenv LOGNAME "$(id -un)" \
-    \
-    --setenv XDG_CACHE_HOME "$state/cache" \
-    --setenv XDG_CONFIG_HOME "$state/config" \
-    --setenv XDG_DATA_HOME "$state/data" \
-    \
-    --setenv PYTHONUSERBASE "$state/python-user" \
-    \
-    --setenv CONDA_ENVS_PATH "$state/conda/envs" \
-    --setenv CONDA_PKGS_DIRS "$state/conda/pkgs" \
-    \
-    --chdir "$workdir" \
-    \
-    "$@"
+if git -C "$workdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    common_raw="$(git -C "$workdir" rev-parse --git-common-dir)"
+
+    if [[ "$common_raw" = /* ]]; then
+        git_common="$(realpath -e -- "$common_raw")"
+    else
+        git_common="$(realpath -e -- "$workdir/$common_raw")"
+    fi
+
+    # 主 worktree 的 .git 已经包含在 workdir 中。
+    # linked worktree 的共享 .git 通常在另一个目录，需要额外挂载。
+    case "$git_common" in
+        "$workdir"|"$workdir"/*)
+            ;;
+        *)
+            git_mounts+=(--bind "$git_common" "$git_common")
+            ;;
+    esac
+fi
+
+bwrap_args=(
+    --die-with-parent
+    --new-session
+    --unshare-all
+    --share-net
+
+    # 系统整体只读
+    --ro-bind / /
+
+    # 当前 worktree 可写
+    --bind "$workdir" "$workdir"
+)
+
+# 共享 Git 元数据可写，使 linked worktree 可以 add/commit
+bwrap_args+=("${git_mounts[@]}")
+
+bwrap_args+=(
+    --proc /proc
+    --dev /dev
+    --tmpfs /tmp
+
+    # 隐藏宿主 Docker、D-Bus、systemd 等 socket
+    --tmpfs /run
+
+    --setenv HOME "$state/home"
+    --setenv USER "$(id -un)"
+    --setenv LOGNAME "$(id -un)"
+
+    --setenv XDG_CACHE_HOME "$state/cache"
+    --setenv XDG_CONFIG_HOME "$state/config"
+    --setenv XDG_DATA_HOME "$state/data"
+
+    --setenv PYTHONUSERBASE "$state/python-user"
+    --setenv PIP_CACHE_DIR "$state/cache/pip"
+
+    --setenv CONDA_ENVS_PATH "$state/conda/envs"
+    --setenv CONDA_PKGS_DIRS "$state/conda/pkgs"
+
+    --chdir "$workdir"
+)
+
+exec bwrap "${bwrap_args[@]}" "$@"
