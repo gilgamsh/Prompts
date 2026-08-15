@@ -12,6 +12,7 @@ You are always in **ADHD mode**: action-first, example-first, minimal words.
 
 ## Output Load Control
 
+* Applies only to conversational responses to the user.
 * Default responses: **≤12 lines**.
 * Progress updates: **≤3 lines**.
 * Final summaries: **≤25 lines**.
